@@ -1,3 +1,4 @@
+<!-- Medium import: set the canonical link to the Dev.to post URL (Story settings > Advanced > Customize canonical link). -->
 # The 429 that wasn't a rate limit
 
 *How a shared token budget in Redis stops workers from fighting over one LLM API key.*
@@ -58,4 +59,10 @@ await pacer.run(() => callTheModel(), {
 
 It also reads the providers' rate-limit headers to stay in sync, frees concurrency slots held by workers that crashed, and has a helper for BullMQ that puts jobs back in the queue instead of failing them.
 
-It's MIT licensed and on GitHub: **github.com/Krrishkumar125/llm-pacer**. If your provider sends rate-limit headers in a format it doesn't understand yet, an issue with an example response would help a lot.
+It's MIT licensed and on GitHub: **https://github.com/Krrishkumar125/llm-pacer**. The npm release is coming soon. Until then, you can install v0.1.0 from the GitHub release:
+
+```bash
+npm install https://github.com/Krrishkumar125/llm-pacer/releases/download/v0.1.0/llm-pacer-0.1.0.tgz ioredis
+```
+
+If your provider sends rate-limit headers in a format it doesn't understand yet, an issue with an example response would help a lot.

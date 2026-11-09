@@ -2,7 +2,7 @@
 title: "Building a distributed tokens-per-minute limiter for LLM APIs with one Redis Lua script"
 subtitle: "Token buckets, reserve-and-settle leases, crash-safe concurrency slots, and why a 429 isn't always a rate limit"
 tags: nodejs, typescript, redis, llm, backend
-canonical:
+canonical: DEVTO_URL_AFTER_POSTING
 ---
 
 LLM APIs limit you on several things at once, and those limits belong to your API key, not to any one process. This post is a deep dive into a small library, [llm-pacer](https://github.com/Krrishkumar125/llm-pacer), that gives every process one shared budget. It covers the design choices, the Lua script at its core, and the edge cases that took the most thought.
@@ -121,7 +121,15 @@ The suite runs against a real Redis:
 
 10 seconds is the theoretical floor at that limit. It's a simulation and says nothing about any specific provider. The point is the shape: shared pacing makes one call per job and finishes all of them.
 
-## 12. Known limits
+## 12. Trying it
+
+The npm release is coming soon. For now, install v0.1.0 from GitHub Releases:
+
+```bash
+npm install https://github.com/Krrishkumar125/llm-pacer/releases/download/v0.1.0/llm-pacer-0.1.0.tgz ioredis
+```
+
+## 13. Known limits
 
 - Estimates are estimates. Leave some headroom under your dashboard limits.
 - No built-in tenant fairness. Stack two budgets (per tenant, then shared) if you need it.

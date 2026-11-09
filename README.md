@@ -11,8 +11,6 @@ Providers limit you on requests per minute (RPM), tokens per minute (TPM) and, i
 npm install https://github.com/Krrishkumar125/llm-pacer/releases/download/v0.1.0/llm-pacer-0.1.0.tgz ioredis   # or use redis instead of ioredis
 ```
 
-Website and docs: https://krrishkumar125.github.io/llm-pacer/
-
 ```ts
 import { Redis } from 'ioredis';
 import { createPacer, estimateTokens } from 'llm-pacer';

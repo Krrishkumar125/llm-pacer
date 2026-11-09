@@ -4,7 +4,6 @@ published: false
 description: "Why per-worker rate limiters overshoot LLM tokens-per-minute limits, and how to share one RPM + TPM budget across every process with a single Redis Lua script."
 tags: node, typescript, redis, llm
 cover_image:
-canonical_url:
 ---
 
 If you call an LLM API from more than one process, you've probably seen this: each worker has a polite little rate limiter, each worker stays under the limit, and you still get a wall of `429 Too Many Requests`.
@@ -40,6 +39,13 @@ TPM is the awkward one, because you don't know a call's real cost until the repl
 5. **Use the Redis clock** (`TIME` inside the script), so clock skew between machines doesn't matter.
 
 ## The code
+
+The npm release is coming soon. For now, install v0.1.0 from GitHub Releases:
+
+```bash
+npm install https://github.com/Krrishkumar125/llm-pacer/releases/download/v0.1.0/llm-pacer-0.1.0.tgz ioredis
+```
+
 
 ```ts
 import { Redis } from 'ioredis';

@@ -9,4 +9,4 @@
 
 Every number in these drafts comes from `npm run storm` (a local simulation, run three times with the same result) or from the linked public pages. Nothing here describes real users or production traffic.
 
-Before posting: publish the npm package and the public repo first so every link resolves, then set `canonical_url` (Dev.to) / `canonical` (Hashnode) to the post chosen as the original.
+Order: post Dev.to first (it is the canonical original), then set Hashnode `canonical` and the Medium canonical link to that Dev.to URL. The npm release is still pending, so every install line points at the v0.1.0 GitHub release.
