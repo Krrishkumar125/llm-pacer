@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>llm-pacer: one shared rate budget for LLM API calls</title>
+<meta name="description" content="Share one RPM, TPM and concurrency budget for OpenAI, Anthropic and other LLM APIs across every Node.js worker, backed by Redis. Reserve tokens, settle real usage, pause everyone on a 429.">
+<meta property="og:title" content="llm-pacer: one shared rate budget for LLM API calls">
+<meta property="og:description" content="RPM + TPM + concurrency across every worker, in one atomic Redis call. Open source, MIT.">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="logo" href="./">llm<span>-pacer</span></a>
+  <nav><a href="#features">Features</a><a href="#quickstart">Quickstart</a><a href="#compare">Compare</a><a href="docs.html">Docs</a><a href="https://github.com/Krrishkumar125/llm-pacer">GitHub</a></nav>
+</div></header>
+
+<main class="wrap">
+<div class="hero">
+  <h1>Stop your workers from <em>fighting over the same rate limit</em>.</h1>
+  <p class="lead">Every worker that calls an LLM API draws from one shared budget in Redis: requests per minute, tokens per minute and calls in flight, all checked in one atomic step. Calls wait their turn instead of collecting 429s.</p>
+  <div class="cta">
+    <span class="install"><code id="cmd">npm install llm-pacer ioredis</code><button onclick="navigator.clipboard.writeText(document.getElementById('cmd').textContent);this.textContent='copied'">copy</button></span>
+    <a class="btn primary" href="#quickstart">Quickstart</a>
+    <a class="btn" href="https://github.com/Krrishkumar125/llm-pacer">View source</a>
+  </div>
+<pre><span class="k">const</span> pacer = <span class="f">createPacer</span>({
+  name: <span class="s">'openai:gpt-4o-mini'</span>,            <span class="c">// same name = same budget, everywhere</span>
+  redis,
+  limits: { rpm: <span class="s">500</span>, tpm: <span class="s">200_000</span>, concurrency: <span class="s">20</span> },
+});
+
+<span class="k">const</span> reply = <span class="k">await</span> pacer.<span class="f">run</span>(() =&gt; openai.chat.completions.<span class="f">create</span>(req), {
+  tokens: <span class="f">estimateTokens</span>(req.messages, { maxOutputTokens: <span class="s">300</span> }),
+  usage: (r) =&gt; r.usage?.total_tokens,             <span class="c">// refund what wasn't used</span>
+  retries: <span class="s">3</span>,
+});</pre>
+</div>
+
+<section>
+  <h2>The problem</h2>
+  <p class="sub">Provider limits apply to your API key. Your code runs in many processes.</p>
+  <div class="problem">
+    <div class="card"><h3>Every worker counts on its own</h3><p>Six workers that each allow the full limit send up to six times the limit together. The provider answers with 429s, every worker backs off on its own, and they all come back at the same moment.</p></div>
+    <div class="card"><h3>Tokens are not requests</h3><p>One call costs 200 tokens, the next costs 20,000, and you only learn the real number when the answer comes back. A plain request counter can't keep up with a tokens-per-minute limit.</p></div>
+    <div class="card"><h3>Not every 429 is the same</h3><p>"Slow down" and "your credits are used up" both arrive as HTTP 429. Retrying the second one wastes minutes and hides the real problem.</p></div>
+    <div class="card"><h3>The usual tools stop short</h3><p>bottleneck has had no release since August 2019. BullMQ's limiter counts jobs, not tokens. HTTP rate limiters are built to reject incoming traffic, not to pace your outgoing calls.</p></div>
+  </div>
+</section>
+
+<section id="features">
+  <h2>What you get</h2>
+  <p class="sub">Small, one job, no runtime dependencies.</p>
+  <div class="grid">
+    <div class="card"><h3>RPM + TPM + RPD + concurrency</h3><p>All limits are checked and reserved together in one Lua script. A call that's short on tokens doesn't use up a request slot.</p></div>
+    <div class="card"><h3>Reserve, then settle</h3><p>Reserve the estimate before the call. <code>settle(realTokens)</code> refunds the rest, or charges the extra when an answer runs long.</p></div>
+    <div class="card"><h3>Shared across machines</h3><p>Any number of processes, containers or servers share one budget. It runs on the Redis server clock, so clock skew doesn't matter.</p></div>
+    <div class="card"><h3>Waits, with jitter</h3><p><code>acquire()</code> sleeps exactly as long as the budget needs to refill, adds jitter so waiters don't wake together, and supports <code>maxWaitMs</code> and <code>AbortSignal</code>.</p></div>
+    <div class="card"><h3>One 429 pauses everyone</h3><p>When the provider sends <code>retry-after</code>, the whole budget pauses, so other workers stop too instead of piling on.</p></div>
+    <div class="card"><h3>Rate limit vs. empty quota</h3><p><code>classifyLlmError()</code> separates <code>rate_limit</code>, <code>quota_exhausted</code>, <code>overloaded</code> and <code>server</code>. Quota errors are never retried.</p></div>
+    <div class="card"><h3>Provider header sync</h3><p>Reads <code>x-ratelimit-*</code> (OpenAI, Groq and other compatible APIs) and <code>anthropic-ratelimit-*</code>, and lowers the budget when the provider says less is left.</p></div>
+    <div class="card"><h3>Crash-safe slots</h3><p>A worker that dies mid-call can't hold a concurrency slot forever, because leases expire.</p></div>
+    <div class="card"><h3>BullMQ-native</h3><p><code>paceJob()</code> sends jobs that don't fit back to the queue through <code>worker.rateLimit()</code>, without using up an attempt.</p></div>
+    <div class="card"><h3>ioredis or node-redis</h3><p>Tested with ioredis 5 and 6 and node-redis 4 and 6. Cluster-safe keys. The in-memory store needs no Redis, for tests.</p></div>
+    <div class="card"><h3>Typed, ESM + CJS</h3><p>Written in TypeScript, with the full API typed. Node 20+. MIT licensed.</p></div>
+    <div class="card"><h3>Honest estimates</h3><p><code>estimateTokens()</code> is a rough chars/4 helper. Pass an exact count if you have a tokenizer. Settling corrects the budget either way.</p></div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <h2>Quickstart</h2>
+  <ol class="steps">
+    <li><strong>Install</strong> with your Redis client of choice.<pre>npm install llm-pacer ioredis    <span class="c"># or: npm install llm-pacer redis</span></pre></li>
+    <li><strong>Create a budget</strong> with the limits from your provider dashboard (a little under them if you want headroom).<pre><span class="k">import</span> { Redis } <span class="k">from</span> <span class="s">'ioredis'</span>;
+<span class="k">import</span> { createPacer, estimateTokens } <span class="k">from</span> <span class="s">'llm-pacer'</span>;
+
+<span class="k">const</span> pacer = <span class="f">createPacer</span>({
+  name: <span class="s">'anthropic:claude-sonnet'</span>,
+  redis: <span class="k">new</span> <span class="f">Redis</span>(process.env.REDIS_URL),
+  limits: { rpm: <span class="s">50</span>, tpm: <span class="s">40_000</span> },
+});</pre></li>
+    <li><strong>Wrap the call.</strong> Every process that uses the same <code>name</code> now shares the budget.<pre><span class="k">const</span> msg = <span class="k">await</span> pacer.<span class="f">run</span>(() =&gt; anthropic.messages.<span class="f">create</span>(req), {
+  tokens: <span class="f">estimateTokens</span>(req.messages, { maxOutputTokens: req.max_tokens }),
+  usage: (m) =&gt; m.usage.input_tokens + m.usage.output_tokens,
+  retries: <span class="s">3</span>,
+});</pre></li>
+    <li><strong>Using BullMQ?</strong> Pace inside the processor.<pre><span class="k">const</span> lease = <span class="k">await</span> <span class="f">paceJob</span>(pacer, worker, { tokens: job.data.tokens }, Worker.RateLimitError);</pre></li>
+  </ol>
+</section>
+
+<section id="compare">
+  <h2>How it compares</h2>
+  <p class="sub">Each tool here is good at the job it was built for. This table only covers pacing outgoing LLM calls.</p>
+  <table>
+    <tr><th></th><th>per-process limiter</th><th>HTTP rate limiter</th><th>llm-pacer</th></tr>
+    <tr><td>Shared across processes</td><td class="no">no</td><td class="yes">yes</td><td class="yes">yes</td></tr>
+    <tr><td>Token cost settled with real usage</td><td class="no">no</td><td class="no">fixed points up front</td><td class="yes">reserve + settle</td></tr>
+    <tr><td>RPM + TPM + concurrency, one atomic step</td><td class="no">no</td><td class="no">separate limiters</td><td class="yes">yes</td></tr>
+    <tr><td>Waits for capacity</td><td class="yes">yes</td><td class="no">built to reject</td><td class="yes">yes</td></tr>
+    <tr><td>Reads provider rate-limit headers</td><td class="no">no</td><td class="no">no</td><td class="yes">yes</td></tr>
+    <tr><td>429 rate limit vs. empty quota</td><td class="no">no</td><td class="no">no</td><td class="yes">yes</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>Run the storm yourself</h2>
+  <p class="sub"><code>npm run storm</code>: 6 workers, 30 jobs of 1,000 tokens each, and a simulated provider that allows 10,000 tokens per 5 s and answers 429 with <code>retry-after-ms</code>. No real API is called.</p>
+  <table class="result">
+    <tr><th>mode</th><th>seconds</th><th>provider calls</th><th>429s</th><th>jobs failed</th></tr>
+    <tr><td>a limiter per worker</td><td>7.2</td><td>102</td><td>78</td><td>6</td></tr>
+    <tr><td>one shared llm-pacer budget</td><td>10.2</td><td>30</td><td>0</td><td>0</td></tr>
+  </table>
+  <p class="note">10 s is the fastest any client can finish at that limit. The per-worker run is faster only because it gave up on 6 jobs. These numbers come from the script in the repo, run three times on one machine. Change the constants at the top and run it yourself.</p>
+</section>
+
+<section>
+  <h2>How it works</h2>
+  <p>Each limit is a token bucket that refills continuously. Every operation is one <code>EVALSHA</code> of a single Lua script. It refills all buckets, checks every limit, and only deducts if every limit has room. Otherwise it returns the exact wait for the slowest limit. Concurrency is a sorted set of lease IDs scored by expiry. Each budget uses two keys with a TTL and a shared hash tag, so it works on Redis Cluster. <a href="docs.html#internals">Read the internals →</a></p>
+</section>
+</main>
+
+<footer><div class="wrap">
+  MIT licensed. Built by <a href="https://github.com/Krrishkumar125">Krrish Kumar</a>. Questions or ideas: <a href="https://github.com/Krrishkumar125/llm-pacer/issues">open an issue</a> or email <a href="mailto:krrishkumar200803@gmail.com">krrishkumar200803@gmail.com</a>.
+</div></footer>
+</body>
+</html>

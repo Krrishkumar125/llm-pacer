@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Docs · llm-pacer</title>
+<meta name="description" content="API reference for llm-pacer: createPacer, acquire, run, leases, provider headers, 429 classification and BullMQ.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="logo" href="./">llm<span>-pacer</span></a>
+  <nav><a href="./#features">Features</a><a href="./#quickstart">Quickstart</a><a href="docs.html">Docs</a><a href="https://github.com/Krrishkumar125/llm-pacer">GitHub</a></nav>
+</div></header>
+<main class="wrap docs">
+<aside>
+  <a href="#install">Install</a><a href="#create">createPacer</a><a href="#acquire">acquire</a><a href="#try">tryAcquire</a><a href="#lease">Lease</a><a href="#run">run</a><a href="#observe">observe / pause / status</a><a href="#errors">Errors</a><a href="#helpers">Helpers</a><a href="#bullmq">BullMQ</a><a href="#recipes">Recipes</a><a href="#internals">Internals</a><a href="#caveats">Caveats</a>
+</aside>
+<div>
+<h2 id="install">Install</h2>
+<pre>npm install llm-pacer ioredis   <span class="c"># or node-redis: npm install llm-pacer redis</span></pre>
+<p>Node 20+. No runtime dependencies. Bring your own Redis client (ioredis ≥ 5 or node-redis ≥ 4). Without a client the budget lives in process memory, which is handy for tests and one-off scripts.</p>
+
+<h2 id="create">createPacer(options)</h2>
+<table>
+<tr><th>option</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>name</code></td><td>required</td><td>Budget name. Every process using the same name shares one budget. Good names are <code>provider:model</code> or <code>provider:model:tenant</code>.</td></tr>
+<tr><td><code>limits</code></td><td>required</td><td><code>{ rpm?, tpm?, rpd?, concurrency? }</code>. Set at least one.</td></tr>
+<tr><td><code>redis</code></td><td>none</td><td>ioredis or node-redis client.</td></tr>
+<tr><td><code>store</code></td><td>none</td><td>Custom <code>PacerStore</code>. Overrides <code>redis</code>.</td></tr>
+<tr><td><code>windowMs</code></td><td>60000</td><td>Window for <code>rpm</code> and <code>tpm</code>. Set 1000 for per-second limits.</td></tr>
+<tr><td><code>leaseTtlMs</code></td><td>120000</td><td>An unsettled lease frees its concurrency slot after this long.</td></tr>
+<tr><td><code>maxWaitMs</code></td><td>60000</td><td>Default longest wait in <code>acquire()</code>.</td></tr>
+<tr><td><code>jitterMs</code></td><td>50</td><td>Random extra sleep added to each wait.</td></tr>
+<tr><td><code>prefix</code></td><td><code>llm-pacer:</code></td><td>Redis key prefix.</td></tr>
+</table>
+
+<h2 id="acquire">pacer.acquire({ tokens?, maxWaitMs?, signal? })</h2>
+<p>Waits until the call fits every limit, reserves it and returns a <a href="#lease">Lease</a>. <code>tokens</code> is your estimate for prompt plus maximum output.</p>
+
+<h2 id="try">pacer.tryAcquire({ tokens? })</h2>
+<p>One attempt with no waiting. It returns <code>{ ok: true, lease }</code> or <code>{ ok: false, retryAfterMs, reason }</code>, where <code>reason</code> is one of <code>rpm</code>, <code>tpm</code>, <code>rpd</code>, <code>concurrency</code> or <code>penalty</code> (paused after a 429).</p>
+
+<h2 id="lease">Lease</h2>
+<ul>
+<li><code>settle(actualTokens?)</code>: the call finished. It refunds the unused part of the estimate, or charges the extra. Called without a number, it keeps the estimate.</li>
+<li><code>release()</code>: the call failed after it reached the provider. It frees the concurrency slot and keeps the estimate charged.</li>
+<li><code>cancel()</code>: the call was never sent. It refunds the request and its tokens.</li>
+</ul>
+<p>All three are idempotent. If you never call any of them, the concurrency slot is freed after <code>leaseTtlMs</code>.</p>
+
+<h2 id="run">pacer.run(fn, options)</h2>
+<p>Runs acquire → <code>fn()</code> → settle. Options: everything from <code>acquire</code>, plus</p>
+<ul>
+<li><code>usage(result)</code> returns the real token count, used to settle.</li>
+<li><code>headers(result)</code> returns response headers, passed to <code>observe()</code>.</li>
+<li><code>retries</code> (default 0) is how many times to retry after a rate limit or overload error. Each retry waits for the budget again.</li>
+</ul>
+<p>When <code>fn</code> throws a rate-limit or overload error, the <em>whole budget</em> pauses for the provider's <code>retry-after</code> (or an exponential fallback of 1 s, 2 s, 4 s…). An exhausted quota and all other errors are rethrown right away.</p>
+
+<h2 id="observe">observe / pause / status / reset</h2>
+<ul>
+<li><code>observe(headers)</code> reads <code>x-ratelimit-remaining-requests|tokens</code> and <code>anthropic-ratelimit-requests|tokens-remaining</code>. It lowers the local budget if the provider reports less, and never raises it.</li>
+<li><code>pause(ms)</code> pauses every caller of this budget.</li>
+<li><code>status()</code> returns <code>{ requestsLeft, tokensLeft, dailyLeft, inflight, pausedForMs }</code>.</li>
+<li><code>reset()</code> clears all state, so the budget is full again.</li>
+</ul>
+
+<h2 id="errors">Errors</h2>
+<ul>
+<li><code>PacerTimeoutError</code> (<code>code: 'PACER_TIMEOUT'</code>, <code>retryAfterMs</code>, <code>reason</code>): no room within <code>maxWaitMs</code>.</li>
+<li><code>PacerRequestTooLargeError</code>: <code>tokens</code> is larger than the whole <code>tpm</code>, so the call can never fit.</li>
+<li><code>PacerAbortError</code>: the <code>AbortSignal</code> fired.</li>
+</ul>
+
+<h2 id="helpers">Helpers</h2>
+<pre><span class="f">classifyLlmError</span>(err)
+<span class="c">// → { kind: 'rate_limit' | 'quota_exhausted' | 'overloaded' | 'server' | 'other', status?, retryAfterMs?, retryable }</span>
+
+<span class="f">parseRateLimitHeaders</span>(res.headers)
+<span class="c">// → { limitRequests?, limitTokens?, remainingRequests?, remainingTokens?, resetRequestsMs?, resetTokensMs?, retryAfterMs? }</span>
+
+<span class="f">estimateTokens</span>(messages, { maxOutputTokens: <span class="s">300</span> })   <span class="c">// rough chars/4 + overhead</span></pre>
+<p><code>classifyLlmError</code> works with errors from the OpenAI and Anthropic SDKs (it reads <code>status</code>, <code>code</code>, <code>error.type</code> and <code>headers</code>), fetch-style errors and plain objects.</p>
+
+<h2 id="bullmq">BullMQ</h2>
+<pre><span class="k">const</span> worker = <span class="k">new</span> <span class="f">Worker</span>(<span class="s">'llm'</span>, <span class="k">async</span> (job) =&gt; {
+  <span class="k">const</span> lease = <span class="k">await</span> <span class="f">paceJob</span>(pacer, worker, { tokens: job.data.tokens }, Worker.RateLimitError);
+  <span class="k">try</span> {
+    <span class="k">const</span> out = <span class="k">await</span> <span class="f">callModel</span>(job.data);
+    <span class="k">await</span> lease.<span class="f">settle</span>(out.usage.total_tokens);
+    <span class="k">return</span> out;
+  } <span class="k">catch</span> (err) { <span class="k">await</span> lease.<span class="f">release</span>(); <span class="k">throw</span> err; }
+}, { connection, concurrency: <span class="s">16</span> });</pre>
+<p>If the budget is full, <code>paceJob</code> calls <code>worker.rateLimit(wait)</code> and throws BullMQ's <code>RateLimitError</code>. The job goes back to waiting without using an attempt.</p>
+
+<h2 id="recipes">Recipes</h2>
+<ul>
+<li><strong>Per-tenant fairness:</strong> acquire from <code>openai:gpt-4o-mini:tenant-42</code> first, then from the shared <code>openai:gpt-4o-mini</code>. Cancel the first lease if the second one times out.</li>
+<li><strong>Per-second limits</strong> (some providers and free tiers): set <code>windowMs: 1000</code> and use a separate pacer with <code>rpd</code> for the daily cap.</li>
+<li><strong>Streaming:</strong> acquire before you open the stream and settle with the usage from the final chunk.</li>
+<li><strong>Tests:</strong> leave out <code>redis</code> to use the in-memory store, or pass <code>new MemoryStore(() =&gt; fakeNow)</code> to control the clock.</li>
+</ul>
+
+<h2 id="internals">Internals</h2>
+<p>Each limit is a token bucket that refills continuously at <code>limit / window</code>. Every operation (acquire, settle, observe, pause, peek, reset) is one <code>EVALSHA</code> of the same Lua script, with a fallback to <code>EVAL</code> after <code>NOSCRIPT</code>. The time comes from the Redis <code>TIME</code> command. On acquire the script refills all buckets, drops expired leases, works out the wait for each limit, and deducts only if every wait is zero. A budget uses <code>llm-pacer:{name}:s</code> (hash: levels, timestamp, pause) and <code>llm-pacer:{name}:l</code> (sorted set of leases). Both keys have a TTL. The <code>{name}</code> hash tag keeps them in one Cluster slot. The full script is exported as <code>PACER_LUA</code>.</p>
+
+<h2 id="caveats">Caveats</h2>
+<ul>
+<li>Estimates are estimates. A long answer can push the token bucket below zero, and later calls then wait for it to refill.</li>
+<li>Providers count in their own way (OpenAI also counts <code>max_tokens</code> toward TPM). Leave some headroom.</li>
+<li>The memory store does not coordinate across processes.</li>
+<li>If Redis is down, calls to the pacer reject with the Redis error. Decide in your own code whether to fail open or closed.</li>
+</ul>
+</div>
+</main>
+<footer><div class="wrap">MIT licensed · <a href="https://github.com/Krrishkumar125/llm-pacer">GitHub</a> · <a href="https://www.npmjs.com/package/llm-pacer">npm</a></div></footer>
+</body>
+</html>

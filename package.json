@@ -1,0 +1,87 @@
+{
+  "name": "llm-pacer",
+  "version": "0.1.0",
+  "description": "One shared RPM + TPM + concurrency budget for LLM API calls across every worker, backed by Redis. Atomic Lua, token refunds, provider header sync, 429 vs quota detection, BullMQ helper.",
+  "keywords": [
+    "llm",
+    "openai",
+    "anthropic",
+    "rate-limit",
+    "rate-limiter",
+    "tokens-per-minute",
+    "tpm",
+    "rpm",
+    "redis",
+    "bullmq",
+    "429",
+    "throttle",
+    "token-bucket",
+    "ai"
+  ],
+  "author": "Krrish Kumar <krrishkumar200803@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Krrishkumar125/llm-pacer.git"
+  },
+  "homepage": "https://github.com/Krrishkumar125/llm-pacer#readme",
+  "bugs": {
+    "url": "https://github.com/Krrishkumar125/llm-pacer/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "storm": "tsx examples/storm.ts",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "peerDependencies": {
+    "ioredis": ">=5",
+    "redis": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "ioredis": {
+      "optional": true
+    },
+    "redis": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "bullmq": "^6.7.2",
+    "ioredis": "^6.0.0",
+    "redis": "^6.3.1",
+    "tsup": "^9.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
