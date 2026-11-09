@@ -17,7 +17,8 @@
 </aside>
 <div>
 <h2 id="install">Install</h2>
-<pre>npm install llm-pacer ioredis   <span class="c"># or node-redis: npm install llm-pacer redis</span></pre>
+<pre>npm install https://github.com/Krrishkumar125/llm-pacer/releases/download/v0.1.0/llm-pacer-0.1.0.tgz ioredis</pre>
+<p class="note">The npm release is coming soon. Until then, install the v0.1.0 build from <a href="https://github.com/Krrishkumar125/llm-pacer/releases/tag/v0.1.0">GitHub Releases</a> as shown above. Use <code>redis</code> instead of <code>ioredis</code> if you prefer node-redis.</p>
 <p>Node 20+. No runtime dependencies. Bring your own Redis client (ioredis ≥ 5 or node-redis ≥ 4). Without a client the budget lives in process memory, which is handy for tests and one-off scripts.</p>
 
 <h2 id="create">createPacer(options)</h2>

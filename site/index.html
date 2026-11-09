@@ -22,10 +22,11 @@
   <h1>Stop your workers from <em>fighting over the same rate limit</em>.</h1>
   <p class="lead">Every worker that calls an LLM API draws from one shared budget in Redis: requests per minute, tokens per minute and calls in flight, all checked in one atomic step. Calls wait their turn instead of collecting 429s.</p>
   <div class="cta">
-    <span class="install"><code id="cmd">npm install llm-pacer ioredis</code><button onclick="navigator.clipboard.writeText(document.getElementById('cmd').textContent);this.textContent='copied'">copy</button></span>
+    <span class="install"><code id="cmd">npm install https://github.com/Krrishkumar125/llm-pacer/releases/download/v0.1.0/llm-pacer-0.1.0.tgz ioredis</code><button onclick="navigator.clipboard.writeText(document.getElementById('cmd').textContent);this.textContent='copied'">copy</button></span>
     <a class="btn primary" href="#quickstart">Quickstart</a>
     <a class="btn" href="https://github.com/Krrishkumar125/llm-pacer">View source</a>
   </div>
+  <p class="note">The npm release is coming soon. Until then, the install line above pulls the v0.1.0 build from GitHub Releases.</p>
 <pre><span class="k">const</span> pacer = <span class="f">createPacer</span>({
   name: <span class="s">'openai:gpt-4o-mini'</span>,            <span class="c">// same name = same budget, everywhere</span>
   redis,
@@ -72,7 +73,7 @@
 <section id="quickstart">
   <h2>Quickstart</h2>
   <ol class="steps">
-    <li><strong>Install</strong> with your Redis client of choice.<pre>npm install llm-pacer ioredis    <span class="c"># or: npm install llm-pacer redis</span></pre></li>
+    <li><strong>Install</strong> with your Redis client of choice.<pre>npm install https://github.com/Krrishkumar125/llm-pacer/releases/download/v0.1.0/llm-pacer-0.1.0.tgz ioredis</pre></li>
     <li><strong>Create a budget</strong> with the limits from your provider dashboard (a little under them if you want headroom).<pre><span class="k">import</span> { Redis } <span class="k">from</span> <span class="s">'ioredis'</span>;
 <span class="k">import</span> { createPacer, estimateTokens } <span class="k">from</span> <span class="s">'llm-pacer'</span>;
 

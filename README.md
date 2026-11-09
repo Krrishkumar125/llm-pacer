@@ -7,8 +7,11 @@ Providers limit you on requests per minute (RPM), tokens per minute (TPM) and, i
 `llm-pacer` keeps one budget in Redis that every process shares. Each call reserves its estimated tokens before it goes out and returns the unused part when the real usage comes back.
 
 ```bash
-npm install llm-pacer ioredis   # or: npm install llm-pacer redis
+# The npm release is coming soon. Until then, install the v0.1.0 build from GitHub Releases:
+npm install https://github.com/Krrishkumar125/llm-pacer/releases/download/v0.1.0/llm-pacer-0.1.0.tgz ioredis   # or use redis instead of ioredis
 ```
+
+Website and docs: https://krrishkumar125.github.io/llm-pacer/
 
 ```ts
 import { Redis } from 'ioredis';
