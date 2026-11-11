@@ -1,5 +1,7 @@
 # llm-pacer
 
+[![npm](https://img.shields.io/npm/v/llm-pacer.svg)](https://www.npmjs.com/package/llm-pacer) [![CI](https://github.com/Krrishkumar125/llm-pacer/actions/workflows/ci.yml/badge.svg)](https://github.com/Krrishkumar125/llm-pacer/actions/workflows/ci.yml) [![license](https://img.shields.io/npm/l/llm-pacer.svg)](LICENSE)
+
 **One shared rate budget for your LLM API calls, across every worker.**
 
 Providers limit you on requests per minute (RPM), tokens per minute (TPM) and, in practice, on how many calls you have in flight. Those limits apply to your whole API key or org. Your code runs in many processes. If each process keeps its own counter, together they overshoot, collect 429s, and retry into the same wall.
@@ -7,8 +9,7 @@ Providers limit you on requests per minute (RPM), tokens per minute (TPM) and, i
 `llm-pacer` keeps one budget in Redis that every process shares. Each call reserves its estimated tokens before it goes out and returns the unused part when the real usage comes back.
 
 ```bash
-# The npm release is coming soon. Until then, install the v0.1.0 build from GitHub Releases:
-npm install https://github.com/Krrishkumar125/llm-pacer/releases/download/v0.1.0/llm-pacer-0.1.0.tgz ioredis   # or use redis instead of ioredis
+npm install llm-pacer ioredis   # or use redis instead of ioredis
 ```
 
 ```ts
