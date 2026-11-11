@@ -1,6 +1,6 @@
 {
   "name": "llm-pacer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One shared RPM + TPM + concurrency budget for LLM API calls across every worker, backed by Redis. Atomic Lua, token refunds, provider header sync, 429 vs quota detection, BullMQ helper.",
   "keywords": [
     "llm",
@@ -18,7 +18,7 @@
     "token-bucket",
     "ai"
   ],
-  "author": "Krrish Kumar <krrishkumar200803@gmail.com>",
+  "author": "Krrish Kumar (https://github.com/Krrishkumar125)",
   "license": "MIT",
   "repository": {
     "type": "git",
