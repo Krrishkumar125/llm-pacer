@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { classifyLlmError } from './classify.js';
+import { classifyLlmError, errorHeaders } from './classify.js';
 import { PacerAbortError, PacerRequestTooLargeError, PacerTimeoutError } from './errors.js';
 import { parseRateLimitHeaders, type HeaderSource, type RateLimitInfo } from './headers.js';
 import { MemoryStore } from './stores/memory.js';
@@ -194,6 +194,8 @@ export class Pacer {
       } catch (err) {
         await lease.release();
         const info = classifyLlmError(err);
+        const headers = errorHeaders(err);
+        if (headers) await this.observe(headers).catch(() => undefined);
         if (info.kind === 'rate_limit' || info.kind === 'overloaded') {
           await this.pause(info.retryAfterMs ?? 1000 * 2 ** attempt);
           if (attempt < (opts.retries ?? 0)) {

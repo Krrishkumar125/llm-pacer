@@ -1,6 +1,7 @@
 import { Redis } from 'ioredis';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
+  classifyLlmError,
   createPacer,
   MemoryStore,
   parseRateLimitHeaders,
@@ -82,6 +83,16 @@ describe('input and output token buckets', () => {
     expect(await pacer.status()).toMatchObject({ inputTokensLeft: 300, outputTokensLeft: 1000 });
   });
 
+  it('run() syncs with the headers on a 429 before pausing', async () => {
+    const { pacer } = clocked({ itpm: 1000 });
+    const err = Object.assign(new Error('rate limited'), {
+      status: 429,
+      headers: { 'anthropic-ratelimit-input-tokens-remaining': '0', 'retry-after': '2' },
+    });
+    await expect(pacer.run(async () => Promise.reject(err))).rejects.toBe(err);
+    expect(await pacer.status()).toMatchObject({ inputTokensLeft: 0, pausedForMs: 2000 });
+  });
+
   it('validates the new limits', () => {
     expect(() => createPacer({ name: 'x', limits: { otpm: -1 } })).toThrow(/otpm/);
     expect(() => createPacer({ name: 'x', limits: { itpm: 10 } })).not.toThrow();
@@ -128,6 +139,41 @@ describe('readUsage', () => {
     expect(readUsage(null)).toBeUndefined();
     expect(readUsage('text')).toBeUndefined();
     expect(readUsage({ usage: {} })).toBeUndefined();
+  });
+});
+
+describe('Gemini errors', () => {
+  const body = {
+    error: {
+      code: 429,
+      message: 'You exceeded your current quota, please check your plan and billing details.',
+      status: 'RESOURCE_EXHAUSTED',
+      details: [
+        { '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [] },
+        { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '57s' },
+      ],
+    },
+  };
+
+  it('treats a 429 with a retryDelay as a rate limit (@google/genai message shape)', () => {
+    const err = Object.assign(new Error(`got status: 429 Too Many Requests. ${JSON.stringify(body)}`), { status: 429 });
+    expect(classifyLlmError(err)).toEqual({ kind: 'rate_limit', status: 429, retryAfterMs: 57_000, retryable: true });
+  });
+
+  it('reads errorDetails (@google/generative-ai shape)', () => {
+    const err = Object.assign(new Error('[429 Too Many Requests] You exceeded your current quota'), {
+      status: 429,
+      errorDetails: body.error.details,
+    });
+    expect(classifyLlmError(err)).toMatchObject({ kind: 'rate_limit', retryAfterMs: 57_000 });
+  });
+
+  it('reads a plain REST error body', () => {
+    expect(classifyLlmError(body)).toMatchObject({ kind: 'rate_limit', retryAfterMs: 57_000 });
+  });
+
+  it('still reports an OpenAI insufficient_quota as exhausted', () => {
+    expect(classifyLlmError({ status: 429, code: 'insufficient_quota' }).kind).toBe('quota_exhausted');
   });
 });
 
