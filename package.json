@@ -1,7 +1,7 @@
 {
   "name": "llm-pacer",
-  "version": "0.1.1",
-  "description": "One shared RPM + TPM + concurrency budget for LLM API calls across every worker, backed by Redis. Atomic Lua, token refunds, provider header sync, 429 vs quota detection, BullMQ helper.",
+  "version": "0.2.0",
+  "description": "One shared RPM, TPM, input/output TPM and concurrency budget for LLM API calls across every worker, backed by Redis. OpenAI, Anthropic and Gemini. Token refunds, header sync, BullMQ helper.",
   "keywords": [
     "llm",
     "openai",
@@ -9,6 +9,10 @@
     "rate-limit",
     "rate-limiter",
     "tokens-per-minute",
+    "itpm",
+    "otpm",
+    "gemini",
+    "prompt-caching",
     "tpm",
     "rpm",
     "redis",
