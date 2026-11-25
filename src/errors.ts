@@ -18,8 +18,12 @@ export class PacerRequestTooLargeError extends Error {
   constructor(
     readonly tokens: number,
     readonly tpm: number,
+    /** Which limit the request is too large for. */
+    readonly limit: 'tpm' | 'itpm' | 'otpm' = 'tpm',
   ) {
-    super(`llm-pacer: request needs ${tokens} tokens but the budget is ${tpm} per window; it can never be admitted`);
+    super(
+      `llm-pacer: request needs ${tokens} tokens but the ${limit} budget is ${tpm} per window; it can never be admitted`,
+    );
     this.name = 'PacerRequestTooLargeError';
   }
 }

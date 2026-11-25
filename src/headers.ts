@@ -11,6 +11,14 @@ export interface RateLimitInfo {
   resetRequestsMs?: number;
   /** Milliseconds until the token budget is fully reset. */
   resetTokensMs?: number;
+  /** Anthropic input-token (ITPM) budget. */
+  limitInputTokens?: number;
+  remainingInputTokens?: number;
+  resetInputTokensMs?: number;
+  /** Anthropic output-token (OTPM) budget. */
+  limitOutputTokens?: number;
+  remainingOutputTokens?: number;
+  resetOutputTokensMs?: number;
   /** Milliseconds the provider asked us to wait (retry-after-ms or retry-after). */
   retryAfterMs?: number;
 }
@@ -79,6 +87,12 @@ export function parseRateLimitHeaders(headers: HeaderSource, now: number = Date.
     remainingTokens: num(first('x-ratelimit-remaining-tokens', 'anthropic-ratelimit-tokens-remaining')),
     resetRequestsMs: parseDurationMs(first('x-ratelimit-reset-requests', 'anthropic-ratelimit-requests-reset'), now),
     resetTokensMs: parseDurationMs(first('x-ratelimit-reset-tokens', 'anthropic-ratelimit-tokens-reset'), now),
+    limitInputTokens: num(get('anthropic-ratelimit-input-tokens-limit')),
+    remainingInputTokens: num(get('anthropic-ratelimit-input-tokens-remaining')),
+    resetInputTokensMs: parseDurationMs(get('anthropic-ratelimit-input-tokens-reset'), now),
+    limitOutputTokens: num(get('anthropic-ratelimit-output-tokens-limit')),
+    remainingOutputTokens: num(get('anthropic-ratelimit-output-tokens-remaining')),
+    resetOutputTokensMs: parseDurationMs(get('anthropic-ratelimit-output-tokens-reset'), now),
   };
   const retryMs = num(get('retry-after-ms'));
   info.retryAfterMs = retryMs !== undefined ? Math.round(retryMs) : parseDurationMs(get('retry-after'), now);

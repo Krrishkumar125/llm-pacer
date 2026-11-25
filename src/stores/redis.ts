@@ -39,7 +39,7 @@ export class RedisStore implements PacerStore {
 
   async exec(key: string, cfg: StoreConfig, op: StoreOp, args: Array<string | number>): Promise<StoreReply> {
     const keys = [`${key}:s`, `${key}:l`];
-    const argv = [op, cfg.rpm, cfg.tpm, cfg.rpd, cfg.concurrency, cfg.windowMs, ...args].map(String);
+    const argv = [op, cfg.rpm, cfg.tpm, cfg.rpd, cfg.concurrency, cfg.windowMs, cfg.itpm, cfg.otpm, ...args].map(String);
     const raw = (await this.run(keys, argv)) as unknown[];
     return {
       ok: Number(raw[0]) as StoreReply['ok'],
@@ -49,6 +49,8 @@ export class RedisStore implements PacerStore {
       dailyLeft: Number(raw[4]),
       inflight: Number(raw[5]),
       reason: String(raw[6] ?? '') as StoreReply['reason'],
+      inputTokensLeft: Number(raw[7] ?? 0),
+      outputTokensLeft: Number(raw[8] ?? 0),
     };
   }
 

@@ -3,6 +3,13 @@ export interface PacerLimits {
   rpm?: number;
   /** Tokens allowed per window (prompt + completion). */
   tpm?: number;
+  /**
+   * Input tokens allowed per window (Anthropic ITPM, Gemini TPM). Count what the provider counts:
+   * for Anthropic that is uncached input plus cache writes; cache reads are free.
+   */
+  itpm?: number;
+  /** Output tokens allowed per window (Anthropic OTPM). */
+  otpm?: number;
   /** Requests allowed per day. */
   rpd?: number;
   /** Maximum calls in flight at once across every process. */
@@ -17,6 +24,8 @@ export interface StoreConfig {
   rpd: number;
   concurrency: number;
   windowMs: number;
+  itpm: number;
+  otpm: number;
 }
 
 export interface StoreReply {
@@ -28,9 +37,11 @@ export interface StoreReply {
   dailyLeft: number;
   inflight: number;
   reason: LimitReason | '';
+  inputTokensLeft: number;
+  outputTokensLeft: number;
 }
 
-export type LimitReason = 'rpm' | 'tpm' | 'rpd' | 'concurrency' | 'penalty' | 'too_large';
+export type LimitReason = 'rpm' | 'tpm' | 'itpm' | 'otpm' | 'rpd' | 'concurrency' | 'penalty' | 'too_large';
 
 /** A backend that applies pacer operations atomically. */
 export interface PacerStore {

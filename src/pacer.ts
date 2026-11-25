@@ -5,6 +5,7 @@ import { parseRateLimitHeaders, type HeaderSource, type RateLimitInfo } from './
 import { MemoryStore } from './stores/memory.js';
 import { RedisStore, type RedisLike } from './stores/redis.js';
 import type { LimitReason, PacerLimits, PacerStore, StoreConfig, StoreReply } from './types.js';
+import type { TokenUsage } from './usage.js';
 
 export interface PacerOptions {
   /** Budget name, e.g. "openai:gpt-4o-mini". Every process using the same name shares one budget. */
@@ -27,8 +28,12 @@ export interface PacerOptions {
 }
 
 export interface AcquireOptions {
-  /** Estimated tokens for this call (prompt + max output). Default 0. */
+  /** Estimated tokens for this call (prompt + max output). Default 0. Charged against tpm. */
   tokens?: number;
+  /** Estimated input tokens. Charged against itpm. Default: `tokens` when only itpm is set, else 0. */
+  inputTokens?: number;
+  /** Output tokens to reserve (your max_tokens). Charged against otpm. Default 0. */
+  outputTokens?: number;
   maxWaitMs?: number;
   signal?: AbortSignal;
 }
@@ -36,6 +41,8 @@ export interface AcquireOptions {
 export interface PacerStatus {
   requestsLeft: number;
   tokensLeft: number;
+  inputTokensLeft: number;
+  outputTokensLeft: number;
   dailyLeft: number;
   inflight: number;
   /** Ms until a provider-requested pause ends (0 if none). */
@@ -47,8 +54,12 @@ export type TryAcquireResult =
   | { ok: false; retryAfterMs: number; reason: LimitReason | '' };
 
 export interface RunOptions<T> extends AcquireOptions {
-  /** Read real token usage from the result to correct the budget. */
-  usage?: (result: T) => number | undefined | null;
+  /**
+   * Read real token usage from the result to correct the budget. Return a
+   * number (total) or a TokenUsage split; `readUsage` handles OpenAI,
+   * Anthropic and Gemini results.
+   */
+  usage?: (result: T) => number | TokenUsage | undefined | null;
   /** Read response headers from the result to sync with the provider. */
   headers?: (result: T) => HeaderSource | undefined | null;
   /** Retries after a rate-limit or overloaded error. Default 0. */
@@ -61,13 +72,18 @@ export class Lease {
     private readonly pacer: Pacer,
     readonly id: string,
     readonly tokens: number,
+    readonly inputTokens = 0,
+    readonly outputTokens = 0,
   ) {}
 
-  /** The call finished. Pass the real token usage to refund (or charge) the difference. */
-  async settle(actualTokens?: number | null): Promise<void> {
+  /**
+   * The call finished. Pass the real usage, as a total or split into input
+   * and output, to refund (or charge) the difference against each bucket.
+   */
+  async settle(actual?: number | TokenUsage | null): Promise<void> {
     if (this.done) return;
     this.done = true;
-    await this.pacer._settle(this, actualTokens ?? -1, false);
+    await this.pacer._settle(this, toActual(actual), false);
   }
 
   /** The call failed after it reached the provider. Frees the slot and keeps the estimate charged. */
@@ -79,7 +95,7 @@ export class Lease {
   async cancel(): Promise<void> {
     if (this.done) return;
     this.done = true;
-    await this.pacer._settle(this, 0, true);
+    await this.pacer._settle(this, { total: 0, input: 0, output: 0 }, true);
   }
 }
 
@@ -121,9 +137,12 @@ export class Pacer {
       rpd: positive('rpd', l.rpd),
       concurrency: positive('concurrency', l.concurrency),
       windowMs: opts.windowMs ?? 60_000,
+      itpm: positive('itpm', l.itpm),
+      otpm: positive('otpm', l.otpm),
     };
-    if (!this.cfg.rpm && !this.cfg.tpm && !this.cfg.rpd && !this.cfg.concurrency) {
-      throw new RangeError('llm-pacer: set at least one of limits.rpm, tpm, rpd or concurrency');
+    const c = this.cfg;
+    if (!c.rpm && !c.tpm && !c.itpm && !c.otpm && !c.rpd && !c.concurrency) {
+      throw new RangeError('llm-pacer: set at least one of limits.rpm, tpm, itpm, otpm, rpd or concurrency');
     }
     this.name = opts.name;
     this.store = opts.store ?? (opts.redis ? new RedisStore(opts.redis) : new MemoryStore());
@@ -136,11 +155,13 @@ export class Pacer {
 
   /** Try once. Never waits. */
   async tryAcquire(opts: Omit<AcquireOptions, 'maxWaitMs' | 'signal'> = {}): Promise<TryAcquireResult> {
-    const tokens = Math.max(0, Math.ceil(opts.tokens ?? 0));
+    const tokens = count(opts.tokens);
+    const input = count(opts.inputTokens ?? (this.cfg.tpm ? 0 : opts.tokens));
+    const output = count(opts.outputTokens);
     const id = randomUUID();
-    const r = await this.store.exec(this.key, this.cfg, 'acquire', [tokens, id, this.leaseTtlMs]);
-    if (r.ok === -1) throw new PacerRequestTooLargeError(tokens, this.cfg.tpm);
-    if (r.ok === 1) return { ok: true, lease: new Lease(this, id, tokens) };
+    const r = await this.store.exec(this.key, this.cfg, 'acquire', [tokens, id, this.leaseTtlMs, input, output]);
+    if (r.ok === -1) throw this.tooLarge(tokens, input, output);
+    if (r.ok === 1) return { ok: true, lease: new Lease(this, id, tokens, input, output) };
     return { ok: false, retryAfterMs: r.waitMs, reason: r.reason };
   }
 
@@ -196,8 +217,9 @@ export class Pacer {
    */
   async observe(headers: HeaderSource | RateLimitInfo): Promise<RateLimitInfo> {
     const info = isInfo(headers) ? headers : parseRateLimitHeaders(headers);
-    if (info.remainingRequests !== undefined || info.remainingTokens !== undefined) {
-      await this.store.exec(this.key, this.cfg, 'observe', [info.remainingRequests ?? -1, info.remainingTokens ?? -1]);
+    const rem = [info.remainingRequests, info.remainingTokens, info.remainingInputTokens, info.remainingOutputTokens];
+    if (rem.some((v) => v !== undefined)) {
+      await this.store.exec(this.key, this.cfg, 'observe', rem.map((v) => v ?? -1));
     }
     return info;
   }
@@ -217,9 +239,43 @@ export class Pacer {
   }
 
   /** @internal */
-  async _settle(lease: Lease, actual: number, refundRequest: boolean): Promise<void> {
-    await this.store.exec(this.key, this.cfg, 'settle', [lease.id, lease.tokens, actual, refundRequest ? 1 : 0]);
+  async _settle(lease: Lease, actual: Actual, refundRequest: boolean): Promise<void> {
+    await this.store.exec(this.key, this.cfg, 'settle', [
+      lease.id,
+      lease.tokens,
+      actual.total,
+      refundRequest ? 1 : 0,
+      lease.inputTokens,
+      actual.input,
+      lease.outputTokens,
+      actual.output,
+    ]);
   }
+
+  private tooLarge(tokens: number, input: number, output: number): PacerRequestTooLargeError {
+    const { tpm, itpm, otpm } = this.cfg;
+    if (itpm && input > itpm) return new PacerRequestTooLargeError(input, itpm, 'itpm');
+    if (otpm && output > otpm) return new PacerRequestTooLargeError(output, otpm, 'otpm');
+    return new PacerRequestTooLargeError(tokens, tpm);
+  }
+}
+
+const count = (v: number | undefined) => Math.max(0, Math.ceil(v ?? 0));
+
+/** Real usage per bucket; -1 means "unknown, keep the estimate". */
+interface Actual {
+  total: number;
+  input: number;
+  output: number;
+}
+
+function toActual(u: number | TokenUsage | null | undefined): Actual {
+  if (u === null || u === undefined) return { total: -1, input: -1, output: -1 };
+  if (typeof u === 'number') return { total: u, input: -1, output: -1 };
+  const input = u.input ?? -1;
+  const output = u.output ?? -1;
+  const total = u.total ?? (u.input !== undefined || u.output !== undefined ? (u.input ?? 0) + (u.output ?? 0) : -1);
+  return { total, input, output };
 }
 
 function isInfo(h: unknown): h is RateLimitInfo {
@@ -232,6 +288,8 @@ function toStatus(r: StoreReply): PacerStatus {
   return {
     requestsLeft: r.requestsLeft,
     tokensLeft: r.tokensLeft,
+    inputTokensLeft: r.inputTokensLeft,
+    outputTokensLeft: r.outputTokensLeft,
     dailyLeft: r.dailyLeft,
     inflight: r.inflight,
     pausedForMs: r.waitMs,

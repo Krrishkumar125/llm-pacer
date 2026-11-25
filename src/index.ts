@@ -9,6 +9,8 @@ export type { RateLimitInfo, HeaderSource } from './headers.js';
 export { classifyLlmError } from './classify.js';
 export type { LlmErrorInfo, LlmErrorKind } from './classify.js';
 export { estimateTokens } from './estimate.js';
+export { readUsage } from './usage.js';
+export type { TokenUsage } from './usage.js';
 export type { EstimateOptions } from './estimate.js';
 export { paceJob } from './bullmq.js';
 export type { RateLimitableWorker } from './bullmq.js';
