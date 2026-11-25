@@ -4,7 +4,7 @@
 
 **One shared rate budget for your LLM API calls, across every worker.**
 
-Providers limit you on requests per minute (RPM), tokens per minute (TPM) and, in practice, on how many calls you have in flight. Those limits apply to your whole API key or org. Your code runs in many processes. If each process keeps its own counter, together they overshoot, collect 429s, and retry into the same wall.
+Providers limit you on requests per minute (RPM), tokens per minute (TPM), and, for Anthropic, input and output tokens per minute separately (ITPM, OTPM). In practice they also limit how many calls you have in flight. Those limits apply to your whole API key or org. Your code runs in many processes. If each process keeps its own counter, together they overshoot, collect 429s, and retry into the same wall.
 
 `llm-pacer` keeps one budget in Redis that every process shares. Each call reserves its estimated tokens before it goes out and returns the unused part when the real usage comes back.
 
@@ -35,16 +35,44 @@ const reply = await pacer.run(
 ## Features
 
 - **RPM, TPM, requests per day and concurrency in one atomic check.** A single Lua script checks and reserves every limit together, so a request rejected on tokens never eats a request slot.
+- **Input and output tokens as separate limits.** Anthropic meters input tokens per minute (ITPM) and output tokens per minute (OTPM) separately, and cache reads do not count toward ITPM. Gemini meters input tokens. Set `itpm` and `otpm`, reserve `inputTokens` and `outputTokens`, and `readUsage()` settles each bucket with what the provider actually counts.
 - **Reserve, then settle.** Reserve the estimate up front. `settle(actualTokens)` refunds what you did not use, or charges the extra if the answer ran long.
 - **Shared across processes and machines.** Any number of workers, servers or containers using the same `name` draw from one budget. Time comes from the Redis server clock, so clock skew between machines does not matter.
 - **Waits instead of failing.** `acquire()` sleeps exactly as long as the budget needs to refill, with jitter so waiters don't all wake at once. It supports `maxWaitMs` and an `AbortSignal`.
-- **429 pauses everyone.** When the provider returns a 429 with `retry-after`, `run()` pauses the whole budget, so the other workers wait too instead of piling on.
-- **Rate limit vs. empty quota.** OpenAI sends HTTP 429 both for "slow down" and for "your credits are used up". `classifyLlmError()` tells them apart, and `run()` never retries an exhausted quota.
-- **Syncs with provider headers.** `observe(headers)` reads `x-ratelimit-remaining-*` (OpenAI, Groq and other OpenAI-compatible APIs) and `anthropic-ratelimit-*`, and lowers the local budget when the provider says less is left (for example, when another service shares your key).
+- **429 pauses everyone.** When the provider returns a 429 with `retry-after` (or Gemini's `retryDelay` in the error body), `run()` pauses the whole budget, so the other workers wait too instead of piling on. Rate-limit headers on the error are synced as well.
+- **Rate limit vs. empty quota.** OpenAI sends HTTP 429 both for "slow down" and for "your credits are used up". `classifyLlmError()` tells them apart, and `run()` never retries an exhausted quota. Gemini words a per-minute 429 as "You exceeded your current quota" too; a `RESOURCE_EXHAUSTED` error with a `retryDelay` is treated as a rate limit you can wait out.
+- **Syncs with provider headers.** `observe(headers)` reads `x-ratelimit-remaining-*` (OpenAI, Groq and other OpenAI-compatible APIs) and `anthropic-ratelimit-*`, including the input and output token headers, and lowers the local budget when the provider says less is left (for example, when another service shares your key).
 - **Crash-safe concurrency slots.** A worker that dies mid-call can't hold its slot forever: leases expire after `leaseTtlMs`.
 - **BullMQ helper.** `paceJob()` puts a job that doesn't fit back in the queue through BullMQ's `worker.rateLimit()` and `RateLimitError`, so the wait doesn't use one of the job's attempts.
 - **Works with ioredis and node-redis**, standalone or Redis Cluster (keys share one hash slot). The in-memory store needs no Redis at all, for tests and scripts.
 - **No runtime dependencies.** TypeScript types included. ESM and CommonJS. Node 20+.
+
+## Anthropic: input, output and the prompt cache
+
+```ts
+import Anthropic from '@anthropic-ai/sdk';
+import { createPacer, estimateTokens, readUsage } from 'llm-pacer';
+
+const pacer = createPacer({
+  name: 'anthropic:claude-sonnet',
+  redis,
+  limits: { rpm: 50, itpm: 30_000, otpm: 8_000 }, // your tier's numbers
+});
+
+const msg = await pacer.run(
+  () => anthropic.messages.create({ model, max_tokens: 1024, system, messages }),
+  {
+    inputTokens: estimateTokens(messages),  // reserve against ITPM
+    outputTokens: 1024,                     // reserve max_tokens against OTPM
+    usage: readUsage,                       // settle: cache reads are refunded, unused output too
+    retries: 3,
+  },
+);
+```
+
+Anthropic counts `input_tokens` (the tokens after your last cache breakpoint) plus `cache_creation_input_tokens` toward ITPM. `cache_read_input_tokens` do not count. So a call that reads 90,000 cached tokens costs only its uncached part, and `readUsage()` refunds the rest of the reservation. If you know most of the prompt will be a cache hit, reserve only the uncached part up front and the budget will not stall waiting for tokens it never spends.
+
+`readUsage(result)` understands OpenAI Chat Completions and Responses, Anthropic Messages, Gemini `usageMetadata` (thinking tokens count as output) and the Vercel AI SDK, and unwraps `.withResponse()`.
 
 ## Why not a normal rate limiter?
 
@@ -56,6 +84,23 @@ const reply = await pacer.run(
 | Waits for capacity (outgoing calls) | yes | built to reject incoming calls | yes |
 | Reads provider rate-limit headers | no | no | yes |
 | Tells a 429 rate limit from an empty quota | no | no | yes |
+
+### Compared with tpm-limiter
+
+[tpm-limiter](https://www.npmjs.com/package/tpm-limiter) (0.1.0, October 2026) is the closest library: it also counts tokens, splits input and output, refunds unused `max_tokens` and reads provider headers. The difference is where the budget lives.
+
+| | tpm-limiter 0.1.0 | **llm-pacer** |
+|---|---|---|
+| Budget shared by many processes and machines | no, one process (its README says so) | yes, one atomic Redis script |
+| Input and output token limits | yes | yes |
+| Cache reads refunded (Anthropic) | yes | yes |
+| Requests per day | no | yes |
+| Concurrency limit across processes, freed if a worker crashes | no, per process | yes, leases expire |
+| Gemini `retryDelay` on 429 | no | yes |
+| BullMQ: wait without spending an attempt | no | yes, `paceJob()` |
+| Learns limits from headers with nothing configured | yes | no, you set the limits |
+
+Use tpm-limiter for a single script. Use llm-pacer when several workers share one API key.
 
 [bottleneck](https://github.com/SGrondin/bottleneck) has Redis clustering and weights, and it still gets about 15 million downloads a week, but its last release was in August 2019. Its open issues include Redis 7 errors in clustering mode ([#205](https://github.com/SGrondin/bottleneck/issues/205), [#219](https://github.com/SGrondin/bottleneck/issues/219)) and ["Is bottleneck still maintained?"](https://github.com/SGrondin/bottleneck/issues/207). BullMQ's built-in limiter counts jobs, not tokens. Weighted limits are an open request there ([#798](https://github.com/taskforcesh/bullmq/issues/798), [#3831](https://github.com/taskforcesh/bullmq/issues/3831)).
 
@@ -78,43 +123,44 @@ shared  |    10.2 |             30 |    0 | 0
 | option | default | |
 |---|---|---|
 | `name` | required | Budget name. Same name means same budget. |
-| `limits` | required | `{ rpm?, tpm?, rpd?, concurrency? }`. Set at least one. |
+| `limits` | required | `{ rpm?, tpm?, itpm?, otpm?, rpd?, concurrency? }`. Set at least one. `itpm` and `otpm` are input and output tokens per window. |
 | `redis` | none | ioredis or node-redis client. Without one, the budget is in-process memory. |
 | `store` | none | Custom `PacerStore` (overrides `redis`). |
-| `windowMs` | `60000` | Window for `rpm` and `tpm`. Use `1000` for per-second limits. |
+| `windowMs` | `60000` | Window for `rpm`, `tpm`, `itpm` and `otpm`. Use `1000` for per-second limits. |
 | `leaseTtlMs` | `120000` | An unsettled lease frees its concurrency slot after this long. |
 | `maxWaitMs` | `60000` | Default longest wait for `acquire()`. |
 | `jitterMs` | `50` | Random extra sleep so waiters spread out. |
 | `prefix` | `"llm-pacer:"` | Redis key prefix. |
 
-### `pacer.acquire({ tokens?, maxWaitMs?, signal? }) → Promise<Lease>`
+### `pacer.acquire({ tokens?, inputTokens?, outputTokens?, maxWaitMs?, signal? }) → Promise<Lease>`
 
-Waits until the call fits, then reserves it. Throws `PacerTimeoutError` (with `retryAfterMs` and `reason`) if it can't fit in time, `PacerAbortError` if the signal fires, and `PacerRequestTooLargeError` if `tokens` is larger than the whole `tpm`.
+Waits until the call fits, then reserves it. `tokens` is charged to `tpm`, `inputTokens` to `itpm` and `outputTokens` to `otpm`. When only `itpm` is set (no `tpm`), `tokens` is charged to `itpm` if `inputTokens` is not given. Throws `PacerTimeoutError` (with `retryAfterMs` and `reason`) if it can't fit in time, `PacerAbortError` if the signal fires, and `PacerRequestTooLargeError` (with `limit`) if a reservation is larger than its whole budget.
 
-### `pacer.tryAcquire({ tokens? })`
+### `pacer.tryAcquire({ tokens?, inputTokens?, outputTokens? })`
 
-One attempt, no waiting: `{ ok: true, lease }` or `{ ok: false, retryAfterMs, reason }`, where `reason` is `'rpm' | 'tpm' | 'rpd' | 'concurrency' | 'penalty'`.
+One attempt, no waiting: `{ ok: true, lease }` or `{ ok: false, retryAfterMs, reason }`, where `reason` is `'rpm' | 'tpm' | 'itpm' | 'otpm' | 'rpd' | 'concurrency' | 'penalty'`.
 
 ### `Lease`
 
-- `settle(actualTokens?)`: the call finished. Refunds or charges the difference from the estimate.
+- `settle(actual?)`: the call finished. Pass a number (total tokens) or `{ input?, output?, total? }` (what `readUsage()` returns). Each bucket is refunded or charged the difference from its estimate. A bucket you pass nothing for keeps its estimate.
 - `release()`: the call failed after reaching the provider. Frees the slot and keeps the estimate charged.
 - `cancel()`: the call was never sent. Refunds the request and its tokens.
 
 All three are idempotent. Only the first call counts.
 
-### `pacer.run(fn, { tokens, usage?, headers?, retries?, maxWaitMs?, signal? })`
+### `pacer.run(fn, { tokens?, inputTokens?, outputTokens?, usage?, headers?, retries?, maxWaitMs?, signal? })`
 
-Does acquire → `fn()` → settle in one call. If `fn` throws a rate limit or overload error, the budget pauses for the provider's `retry-after` and the call retries up to `retries` times. Other errors, including an exhausted quota, are rethrown.
+Does acquire → `fn()` → settle in one call. `usage` may return a number or a `{ input, output, total }` split; pass `readUsage` for the common SDKs. If `fn` throws a rate limit or overload error, the budget pauses for the provider's `retry-after` and the call retries up to `retries` times. Other errors, including an exhausted quota, are rethrown.
 
 ### `pacer.observe(headers)`, `pacer.pause(ms)`, `pacer.status()`, `pacer.reset()`
 
-Sync with provider headers, pause the budget for every caller, read `{ requestsLeft, tokensLeft, dailyLeft, inflight, pausedForMs }`, or clear the state.
+Sync with provider headers, pause the budget for every caller, read `{ requestsLeft, tokensLeft, inputTokensLeft, outputTokensLeft, dailyLeft, inflight, pausedForMs }`, or clear the state.
 
 ### Helpers
 
 - `classifyLlmError(err)` → `{ kind: 'rate_limit' | 'quota_exhausted' | 'overloaded' | 'server' | 'other', status?, retryAfterMs?, retryable }`
-- `parseRateLimitHeaders(headers)` for `Headers` objects or plain objects. Understands Go-style durations (`6m0s`, `20ms`), seconds and RFC 3339 dates.
+- `readUsage(result)` → `{ input, output, total }` from OpenAI, Anthropic, Gemini and Vercel AI SDK results.
+- `parseRateLimitHeaders(headers)` for `Headers` objects or plain objects, including `anthropic-ratelimit-input-tokens-*` and `-output-tokens-*`. Understands Go-style durations (`6m0s`, `20ms`), seconds and RFC 3339 dates.
 - `estimateTokens(textOrMessages, { maxOutputTokens?, charsPerToken? })` is a deliberately rough chars/4 estimate. Pass an exact count if you have a tokenizer. Settling corrects the budget either way.
 
 ### BullMQ
@@ -143,8 +189,9 @@ Every operation is one `EVALSHA` of a single Lua script, so Redis applies it ato
 ## Limits and honest caveats
 
 - Token estimates are estimates. A reply that runs longer than expected can push the bucket below zero, and later calls then wait until it refills. That is the intended, safe behaviour.
-- Providers count in their own way (for example, OpenAI also counts `max_tokens` against TPM). Set `limits` a little under your dashboard numbers if you want headroom.
+- Providers count in their own way (for example, OpenAI also counts `max_tokens` against TPM, and Gemini limits are per Google Cloud project, not per key). Set `limits` a little under your dashboard numbers if you want headroom.
 - The in-memory store does not coordinate across processes. Use Redis for that.
+- Gemini's spend-based limits are not modelled. A 429 from one is classified by its message like any other.
 - There is no fairness across tenants. Give each tenant its own `name` (and a shared one on top) if you need that.
 
 ## Development
